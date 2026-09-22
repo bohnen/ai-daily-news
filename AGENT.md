@@ -19,6 +19,9 @@
   - Deduplicates by title similarity.
   - Uses an OpenAI-compatible API to generate Japanese summaries.
   - Uses the same OpenAI-compatible API for summary generation and AI relevance filtering.
+  - Before summarizing, calls `typesafe_triage.triage()` once per article: clear non-AI articles (`noul <= 0.3`) are dropped without an LLM call, clear AI articles (`>= 0.7`) skip the LLM's relevance verdict, and the rest are judged by the LLM as before. The same request yields `importance`, `tags`, and the article's category.
+  - Categories are topic-based and come from TypeSafe, not from the feed: `typesafe_triage.CATEGORIES` (6 topics) plus `その他`. An article goes to `その他` when the choice confidence is below `CATEGORY_MIN_CONFIDENCE` (0.5) or TypeSafe is unavailable; `stats.category_other` tracks the count, and a rising share is the signal to revisit the taxonomy. The keys of `FEED_CATEGORIES` are only feed groups (`feed_group`).
+  - Writes excluded articles to `daily-ai-news-generator/output/rejected_articles.json` for evaluation.
   - Writes `daily-ai-news-generator/output/daily_articles.json`.
 - `daily-ai-news-generator/scripts/generate_html.py`
   - Reads `daily_articles.json`.
@@ -77,14 +80,20 @@ uv run python daily-ai-news-generator/scripts/serve_docs.py
 
 ## Secrets And Environment Files
 
-- `daily-ai-news-generator/scripts/fetch_daily.py` loads `daily-ai-news-generator/local-llm.env` via `python-dotenv`.
-- LLM access uses a local OpenAI-compatible Chat Completions server configured by `LOCAL_LLM_BASE_URL`, `LOCAL_LLM_MODEL`, and optional `LOCAL_LLM_API_KEY`.
-- The default local configuration is `http://127.0.0.1:1234/v1/` with `google/gemma-4-e2b`; no real API credential is required.
+- `daily-ai-news-generator/scripts/fetch_daily.py` loads `daily-ai-news-generator/llm.env` and then the untracked `daily-ai-news-generator/secrets.env` via `python-dotenv`. Already-exported environment variables win.
+- LLM access uses an OpenAI-compatible Chat Completions API configured by `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY`.
+- The default configuration is Nous Portal (`https://inference-api.nousresearch.com/v1`) with `deepseek/deepseek-v4-flash`. `LLM_API_KEY` is required unless `LLM_BASE_URL` points at localhost.
+- Requests send `strict` JSON schema and, with `LLM_DISABLE_REASONING=1`, `reasoning: {enabled: false}`; without these the routed provider may drop required keys or burn the token budget on reasoning.
 - Summary parallelism is controlled by `SUMMARY_CONCURRENCY` and defaults to `3`.
-- Local benchmarking in this environment showed `SUMMARY_CONCURRENCY=5` outperforming `1` and `3` during the early summary phase, so treat `5` as a good starting point when GPU headroom is available.
-- Summary-level deduplication uses `SUMMARY_DEDUP_MODEL` and `SUMMARY_DEDUP_THRESHOLD`; defaults are `hotchpotch/static-embedding-japanese` and `0.65`.
-- `daily-ai-news-generator/local-llm.env` is intentionally tracked and should contain only copyable local defaults. Do not add provider credentials to it.
-- When working in a worktree, confirm that the local LLM server is running before running scripts.
+- `llm.env` sets `SUMMARY_CONCURRENCY=5` for the remote API; lower it if the provider returns 429s (requests retry with backoff).
+- TypeSafe (`TYPESAFE_API_KEY`) is optional and fail-open: without the key or on API failure every script behaves as it did before TypeSafe. Thresholds, the tag vocabulary, and importance weights are constants in `daily-ai-news-generator/scripts/typesafe_triage.py`; check changes with `uv run python daily-ai-news-generator/scripts/eval_typesafe.py` (read-only against `output/`).
+- `importance` exists to surface technical / implementation information for engineers, not business impact: it combines `practical_value`, `technical_depth`, and technical `novelty` (rubrics and weights in `typesafe_triage.py`). Do not add a business-impact score.
+- The AI-relevance reject threshold stays at `0.3`; the owner prefers fewer articles over recall.
+- TypeSafe cannot generate text and is weak at date comparison and counting; use it only for yes/no, choice, and rubric-score judgments, and pass it the original English title/text rather than the Japanese summary.
+- Pure-function tests: `uv run --with pytest pytest daily-ai-news-generator/tests`.
+- Summary-level deduplication uses `SUMMARY_DEDUP_MODEL` and `SUMMARY_DEDUP_THRESHOLD`; defaults are `hotchpotch/static-embedding-japanese` and `0.65`. Pairs with similarity in `[0.55, 0.80)` are confirmed by TypeSafe (`same_event`) when the key is set.
+- `daily-ai-news-generator/llm.env` is intentionally tracked and must not contain credentials. Put `LLM_API_KEY` and `TYPESAFE_API_KEY` in the gitignored `secrets.env` (template: `secrets.env.example`) or the environment, and never print their values.
+- When working in a worktree or publish clone, `secrets.env` is not present; export the keys or copy the file.
 
 ## Daily Publish Workflow
 
@@ -99,7 +108,7 @@ uv run python daily-ai-news-generator/scripts/serve_docs.py
 
 ## Operational Expectations
 
-- Do not publish or commit a zero-article daily edition caused by network failure or local LLM failure.
+- Do not publish or commit a zero-article daily edition caused by network failure or LLM failure.
 - Validate `daily-ai-news-generator/output/daily_articles.json` before publishing. Confirm nonzero AI-filtered total, nonzero visible published count, duplicate-candidate count, and category breakdown.
 - When updating daily content, verify that `docs/archive-index.json` and the target daily page remain in a coherent published state.
 - Keep generated intermediate files out of git; `daily-ai-news-generator/output/` is intentionally ignored.

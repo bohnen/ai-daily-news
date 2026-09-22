@@ -1,7 +1,7 @@
 # Scheduled publisher
 
 `scripts/publish_daily.py` is the deterministic entry point for one Daily AI
-News edition. It keeps the existing local-LLM generator, then validates its
+News edition. It keeps the existing LLM generator (OpenAI-compatible API), then validates its
 JSON, updates the archive, and—when requested—commits, pushes, and opens a
 draft pull request.
 
@@ -18,7 +18,8 @@ stops the job before any Git changes.
 
 ## macOS scheduling
 
-LM Studio must be running before the job starts. Install the example as a user
+The job needs `LLM_API_KEY` in `daily-ai-news-generator/secrets.env` (gitignored;
+see `secrets.env.example`). Install the example as a user
 LaunchAgent after reviewing its absolute repository path:
 
 ```bash

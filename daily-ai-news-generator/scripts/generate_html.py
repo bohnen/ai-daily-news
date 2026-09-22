@@ -10,6 +10,8 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 import html as html_module
 
+from typesafe_triage import TAGS
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INPUT_JSON = REPO_ROOT / "daily-ai-news-generator" / "output" / "daily_articles.json"
 DOCS_DIR = REPO_ROOT / "docs"
@@ -26,22 +28,26 @@ def load_archive_dates():
         dates = json.load(f)
     return sorted(dates, reverse=True)
 
+TOP_ARTICLE_COUNT = 5
+
 CATEGORY_ICONS = {
-    "Anthropic": "🤖",
-    "OpenAI / Google / Microsoft": "🏢",
-    "AI開発ツール": "🛠️",
-    "AI企業・プラットフォーム": "🚀",
-    "AIニュース・メディア": "📰",
-    "研究者・ニュースレター": "🔬",
+    "モデル・研究": "🔬",
+    "製品・サービス": "🚀",
+    "開発・エンジニアリング": "🛠️",
+    "ビジネス・業界": "🏢",
+    "安全・セキュリティ": "🛡️",
+    "政策・社会": "⚖️",
+    "その他": "📌",
 }
 
 CATEGORY_COLORS = {
-    "Anthropic": "#c85250",
-    "OpenAI / Google / Microsoft": "#4285f4",
-    "AI開発ツール": "#34a853",
-    "AI企業・プラットフォーム": "#ff6d00",
-    "AIニュース・メディア": "#7c4dff",
-    "研究者・ニュースレター": "#00897b",
+    "モデル・研究": "#00897b",
+    "製品・サービス": "#ff6d00",
+    "開発・エンジニアリング": "#34a853",
+    "ビジネス・業界": "#4285f4",
+    "安全・セキュリティ": "#c85250",
+    "政策・社会": "#7c4dff",
+    "その他": "#78809a",
 }
 
 def e(text):
@@ -58,6 +64,71 @@ def article_id(article):
         str(article.get("url", "")),
     ])
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:16]
+
+def sort_by_importance(articles):
+    """重要度の高い順。重要度なしは末尾、同点は新しい順。"""
+    newest_first = sorted(articles, key=lambda art: art.get("date_raw", ""), reverse=True)
+    return sorted(
+        newest_first,
+        key=lambda art: (art.get("importance") is None, -(art.get("importance") or 0)),
+    )
+
+def render_card(art, color):
+    article_key = article_id(art)
+    is_duplicate_candidate = art.get("is_duplicate_candidate", False)
+    duplicate_count = int(art.get("duplicate_count", 0))
+    duplicate_score = art.get("duplicate_score")
+    title = e(art.get("title", ""))
+    url = e(art.get("url", "#"))
+    source = e(art.get("source", ""))
+    date = e(art.get("date", ""))
+    summary = e(art.get("summary", ""))
+    duplicate_badges = ""
+    tags = [tag for tag in art.get("tags", []) if tag in TAGS]
+    tag_chips = "".join(f'<span class="tag-chip">{e(TAGS[tag][0])}</span>' for tag in tags)
+    importance = art.get("importance")
+    importance_badge = ""
+    if importance is not None:
+        importance_badge = f'<span class="importance-badge" title="重要度スコア">★ {importance * 100:.0f}</span>'
+
+    if duplicate_count:
+        duplicate_badges += (
+            f'<span class="duplicate-badge">重複 {duplicate_count}件</span>'
+        )
+    if is_duplicate_candidate:
+        score_label = ""
+        if duplicate_score is not None:
+            score_label = f' 類似度 {duplicate_score:.2f}'
+        duplicate_badges += (
+            f'<span class="duplicate-badge is-candidate">重複候補{score_label}</span>'
+        )
+
+    return f'''
+    <article class="news-card{' is-duplicate-candidate' if is_duplicate_candidate else ''}" data-article-id="{article_key}" data-is-duplicate-candidate="{str(is_duplicate_candidate).lower()}" data-tags="{' '.join(tags)}">
+      <div class="card-meta">
+        <span class="card-source" style="color:{color}">{source}</span>
+        <span class="card-date">{date}</span>
+      </div>
+      <div class="card-flags">{importance_badge}{duplicate_badges}{tag_chips}</div>
+      <div class="card-actions">
+        <button
+          type="button"
+          class="interest-toggle"
+          data-article-id="{article_key}"
+          aria-pressed="false"
+        >
+          <span class="interest-icon" aria-hidden="true">☐</span>
+          <span class="interest-label">気になる</span>
+        </button>
+      </div>
+      <h3 class="card-title">
+        <a href="{url}" target="_blank" rel="noopener">{title}</a>
+      </h3>
+      <p class="card-summary">{summary}</p>
+      <a href="{url}" target="_blank" rel="noopener" class="card-link" style="color:{color}">
+        記事を読む →
+      </a>
+    </article>'''
 
 def generate_html(data):
     date_str = data["date"]
@@ -111,57 +182,8 @@ def generate_html(data):
         color = CATEGORY_COLORS.get(cat, "#666")
         anchor = cat.replace(" ", "-").replace("/", "").replace("・", "")
 
-        cards = ""
-        for art in articles:
-            article_key = article_id(art)
-            is_duplicate_candidate = art.get("is_duplicate_candidate", False)
-            duplicate_count = int(art.get("duplicate_count", 0))
-            duplicate_score = art.get("duplicate_score")
-            title = e(art.get("title", ""))
-            url = e(art.get("url", "#"))
-            source = e(art.get("source", ""))
-            date = e(art.get("date", ""))
-            summary = e(art.get("summary", ""))
-            duplicate_badges = ""
-
-            if duplicate_count:
-                duplicate_badges += (
-                    f'<span class="duplicate-badge">重複 {duplicate_count}件</span>'
-                )
-            if is_duplicate_candidate:
-                score_label = ""
-                if duplicate_score is not None:
-                    score_label = f' 類似度 {duplicate_score:.2f}'
-                duplicate_badges += (
-                    f'<span class="duplicate-badge is-candidate">重複候補{score_label}</span>'
-                )
-
-            cards += f'''
-            <article class="news-card{' is-duplicate-candidate' if is_duplicate_candidate else ''}" data-article-id="{article_key}" data-is-duplicate-candidate="{str(is_duplicate_candidate).lower()}">
-              <div class="card-meta">
-                <span class="card-source" style="color:{color}">{source}</span>
-                <span class="card-date">{date}</span>
-              </div>
-              <div class="card-flags">{duplicate_badges}</div>
-              <div class="card-actions">
-                <button
-                  type="button"
-                  class="interest-toggle"
-                  data-article-id="{article_key}"
-                  aria-pressed="false"
-                >
-                  <span class="interest-icon" aria-hidden="true">☐</span>
-                  <span class="interest-label">気になる</span>
-                </button>
-              </div>
-              <h3 class="card-title">
-                <a href="{url}" target="_blank" rel="noopener">{title}</a>
-              </h3>
-              <p class="card-summary">{summary}</p>
-              <a href="{url}" target="_blank" rel="noopener" class="card-link" style="color:{color}">
-                記事を読む →
-              </a>
-            </article>'''
+        articles = sort_by_importance(articles)
+        cards = "".join(render_card(art, color) for art in articles)
 
         sections += f'''
       <section class="category-section" id="{anchor}">
@@ -175,6 +197,52 @@ def generate_html(data):
           {cards}
         </div>
       </section>'''
+
+    # 今日のトップ（重複候補を除く重要度上位）
+    ranked = sort_by_importance([
+        art
+        for articles in categories.values()
+        for art in articles
+        if art.get("importance") is not None and not art.get("is_duplicate_candidate")
+    ])[:TOP_ARTICLE_COUNT]
+    top_section = ""
+    if ranked:
+        top_cards = "".join(
+            render_card(art, CATEGORY_COLORS.get(art.get("category"), "#666")) for art in ranked
+        )
+        top_section = f'''
+      <section class="category-section top-section" id="top">
+        <div class="category-header" style="border-left-color:var(--accent)">
+          <span class="category-icon">🔥</span>
+          <h2 class="category-title">今日のトップ{len(ranked)}</h2>
+        </div>
+        <div class="cards-grid">
+          {top_cards}
+        </div>
+      </section>'''
+
+    # タグ絞り込み（今日の記事に付いたタグだけ、件数の多い順）
+    tag_counts = {}
+    for articles in categories.values():
+        for art in articles:
+            if art.get("is_duplicate_candidate"):
+                continue
+            for tag in art.get("tags", []):
+                if tag in TAGS:
+                    tag_counts[tag] = tag_counts.get(tag, 0) + 1
+    tag_filter = ""
+    if tag_counts:
+        tag_buttons = "".join(
+            f'<button type="button" class="tag-filter-button" data-tag="{tag}" aria-pressed="false">'
+            f'{e(TAGS[tag][0])}<span class="tag-filter-count">{count}</span></button>'
+            for tag, count in sorted(tag_counts.items(), key=lambda item: -item[1])
+        )
+        tag_filter = f'''
+      <div class="tag-filter" id="tagFilter" aria-label="タグで絞り込み">
+        <span class="tag-filter-title">タグ</span>
+        {tag_buttons}
+        <button type="button" class="tag-filter-clear" id="tagFilterClear">クリア</button>
+      </div>'''
 
     html = f'''<!DOCTYPE html>
 <html lang="ja">
@@ -477,6 +545,68 @@ def generate_html(data):
       font-weight: 600;
       padding: 3px 10px;
     }}
+    .importance-badge {{
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      border: 1px solid rgba(255,193,7,0.4);
+      background: rgba(255,193,7,0.12);
+      color: #ffe08a;
+      font-size: 0.72rem;
+      font-weight: 700;
+      padding: 3px 10px;
+    }}
+    .tag-chip {{
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      background: var(--surface2);
+      color: var(--text-muted);
+      font-size: 0.72rem;
+      padding: 3px 10px;
+    }}
+    .tag-filter {{
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 24px;
+    }}
+    .tag-filter-title {{
+      color: var(--text-muted);
+      font-size: 0.8rem;
+      font-weight: 600;
+    }}
+    .tag-filter-button, .tag-filter-clear {{
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text-muted);
+      border-radius: 999px;
+      font-size: 0.78rem;
+      padding: 4px 12px;
+      cursor: pointer;
+    }}
+    .tag-filter-button.is-selected {{
+      border-color: var(--accent);
+      background: rgba(108,99,255,0.18);
+      color: var(--text);
+    }}
+    .tag-filter-count {{
+      font-size: 0.7rem;
+      opacity: 0.7;
+    }}
+    .tag-filter-clear {{
+      border-style: dashed;
+    }}
+    .top-section .cards-grid {{
+      border: 1px solid rgba(108,99,255,0.35);
+      border-radius: var(--radius);
+      padding: 16px;
+      background: rgba(108,99,255,0.05);
+    }}
     .duplicate-badge.is-candidate {{
       border-color: rgba(255,159,67,0.35);
       background: rgba(255,159,67,0.12);
@@ -635,6 +765,8 @@ def generate_html(data):
     </aside>
 
     <main class="main-content">
+      {tag_filter}
+      {top_section}
       {sections}
     </main>
   </div>
@@ -652,6 +784,19 @@ def generate_html(data):
       const storageKey = 'daily-ai-news:interests';
       const filterKey = 'daily-ai-news:interest-filter';
       const duplicateFilterKey = 'daily-ai-news:show-duplicates';
+      const tagFilterKey = 'daily-ai-news:tag-filter';
+      const tagButtons = Array.from(document.querySelectorAll('.tag-filter-button'));
+      const tagClearButton = document.getElementById('tagFilterClear');
+      const loadSelectedTags = () => {{
+        try {{
+          const parsed = JSON.parse(localStorage.getItem(tagFilterKey) || '[]');
+          const available = new Set(tagButtons.map((button) => button.dataset.tag));
+          return new Set(Array.isArray(parsed) ? parsed.filter((tag) => available.has(tag)) : []);
+        }} catch (_error) {{
+          return new Set();
+        }}
+      }};
+      const selectedTags = loadSelectedTags();
       const cards = Array.from(document.querySelectorAll('.news-card'));
       const buttons = Array.from(document.querySelectorAll('.interest-toggle'));
       const filterCheckbox = document.getElementById('interestFilter');
@@ -697,8 +842,15 @@ def generate_html(data):
           const isDuplicateCandidate = card.dataset.isDuplicateCandidate === 'true';
           const hiddenByInterest = onlyInterested && !selected.has(id);
           const hiddenByDuplicate = !showDuplicates && isDuplicateCandidate;
-          const shouldHide = hiddenByInterest || hiddenByDuplicate;
+          const cardTags = (card.dataset.tags || '').split(' ');
+          const hiddenByTag = selectedTags.size > 0 && !cardTags.some((tag) => selectedTags.has(tag));
+          const shouldHide = hiddenByInterest || hiddenByDuplicate || hiddenByTag;
           card.classList.toggle('is-hidden-by-filter', shouldHide);
+        }});
+        tagButtons.forEach((button) => {{
+          const isSelected = selectedTags.has(button.dataset.tag);
+          button.classList.toggle('is-selected', isSelected);
+          button.setAttribute('aria-pressed', isSelected ? 'true' : 'false');
         }});
       }};
 
@@ -718,6 +870,31 @@ def generate_html(data):
         applyFilterState(selected);
         duplicateCheckbox.addEventListener('change', () => {{
           localStorage.setItem(duplicateFilterKey, String(duplicateCheckbox.checked));
+          applyFilterState(selected);
+        }});
+      }}
+
+      const saveSelectedTags = () => {{
+        try {{
+          localStorage.setItem(tagFilterKey, JSON.stringify(Array.from(selectedTags)));
+        }} catch (_error) {{}}
+      }};
+      tagButtons.forEach((button) => {{
+        button.addEventListener('click', () => {{
+          const tag = button.dataset.tag;
+          if (selectedTags.has(tag)) {{
+            selectedTags.delete(tag);
+          }} else {{
+            selectedTags.add(tag);
+          }}
+          saveSelectedTags();
+          applyFilterState(selected);
+        }});
+      }});
+      if (tagClearButton) {{
+        tagClearButton.addEventListener('click', () => {{
+          selectedTags.clear();
+          saveSelectedTags();
           applyFilterState(selected);
         }});
       }}

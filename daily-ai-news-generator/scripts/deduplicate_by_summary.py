@@ -13,17 +13,24 @@ import json
 import os
 import hashlib
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
 
+import typesafe_triage
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INPUT_JSON = REPO_ROOT / "daily-ai-news-generator" / "output" / "daily_articles.json"
-ENV_PATH = REPO_ROOT / "daily-ai-news-generator" / "local-llm.env"
+ENV_PATH = REPO_ROOT / "daily-ai-news-generator" / "llm.env"
 DEFAULT_MODEL_NAME = "hotchpotch/static-embedding-japanese"
 DEFAULT_SIMILARITY_THRESHOLD = 0.65
+# この範囲の類似度のペアだけ TypeSafe で「同一事象か」を確認する
+DEDUP_LOW = 0.55
+DEDUP_HIGH = 0.80
+MAX_BOUNDARY_PAIRS = 200
 
 load_dotenv(ENV_PATH)
 
@@ -105,13 +112,63 @@ def summary_sort_key(article: dict) -> tuple:
     )
 
 
-def collect_clusters(similarities: np.ndarray, threshold: float) -> dict[int, list[int]]:
+def judge_boundary_pairs(similarities: np.ndarray, articles: list[dict]) -> dict[tuple[int, int], bool]:
+    """境界帯 (DEDUP_LOW <= sim < DEDUP_HIGH) のペアを TypeSafe で確認する。
+
+    戻り値は {(i, j): 同一事象か}。キー未設定・失敗・上限超過のペアは含めない
+    （呼び出し側は従来の閾値判定にフォールバックする）。
+    state には日本語要約ではなく原文の title/text を使う。
+    """
+    if not typesafe_triage.is_enabled():
+        return {}
+
+    size = similarities.shape[0]
+    pairs = [
+        (i, j)
+        for i in range(size)
+        for j in range(i + 1, size)
+        if DEDUP_LOW <= similarities[i, j] < DEDUP_HIGH
+    ]
+    pairs.sort(key=lambda pair: similarities[pair], reverse=True)
+    if len(pairs) > MAX_BOUNDARY_PAIRS:
+        print(f"  [WARN] 境界ペア {len(pairs)}件のうち上位 {MAX_BOUNDARY_PAIRS}件のみ TypeSafe で確認します。")
+        pairs = pairs[:MAX_BOUNDARY_PAIRS]
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        probs = list(executor.map(lambda pair: typesafe_triage.same_event(articles[pair[0]], articles[pair[1]]), pairs))
+
+    verdicts = {}
+    for (i, j), prob in zip(pairs, probs):
+        if prob is None:
+            continue
+        verdicts[(i, j)] = prob >= typesafe_triage.SAME_EVENT_THRESHOLD
+        print(
+            f"  [BOUNDARY] sim={similarities[i, j]:.2f} noul={prob:.2f} "
+            f"{'同一' if verdicts[(i, j)] else '別件'}: "
+            f"{articles[i].get('title', '')[:40]} / {articles[j].get('title', '')[:40]}"
+        )
+    return verdicts
+
+
+def is_duplicate_pair(similarity: float, threshold: float, verdict: bool | None) -> bool:
+    """高類似度は即重複、境界帯は TypeSafe の判定を優先、判定なしは従来の閾値。"""
+    if similarity >= DEDUP_HIGH or verdict is None:
+        return similarity >= threshold
+    return verdict
+
+
+def collect_clusters(
+    similarities: np.ndarray,
+    threshold: float,
+    verdicts: dict[tuple[int, int], bool] | None = None,
+) -> dict[int, list[int]]:
+    verdicts = verdicts or {}
     size = similarities.shape[0]
     union_find = UnionFind(size)
 
     for i in range(size):
         for j in range(i + 1, size):
-            if similarities[i, j] >= threshold:
+            if is_duplicate_pair(similarities[i, j], threshold, verdicts.get((i, j))):
                 union_find.union(i, j)
 
     clusters: dict[int, list[int]] = defaultdict(list)
@@ -126,6 +183,7 @@ def reset_duplicate_metadata(articles: list[dict]) -> None:
         article["is_duplicate_candidate"] = False
         article["duplicate_of"] = None
         article["duplicate_score"] = None
+        article["duplicate_confirmed_by"] = None
         article["duplicate_count"] = 0
         article["duplicate_group_id"] = article["article_id"]
 
@@ -168,7 +226,8 @@ def main() -> dict:
     )
 
     similarities = embeddings @ embeddings.T
-    clusters = collect_clusters(similarities, threshold)
+    verdicts = judge_boundary_pairs(similarities, flat_articles)
+    clusters = collect_clusters(similarities, threshold, verdicts)
 
     duplicate_count = 0
 
@@ -191,8 +250,10 @@ def main() -> dict:
         for article in cluster_articles:
             if article is representative:
                 continue
-            score_to_rep = round(float(similarities[rep_index, flat_articles.index(article)]), 4)
-            if score_to_rep < threshold:
+            article_index = flat_articles.index(article)
+            score_to_rep = round(float(similarities[rep_index, article_index]), 4)
+            verdict = verdicts.get((min(rep_index, article_index), max(rep_index, article_index)))
+            if not is_duplicate_pair(score_to_rep, threshold, verdict):
                 continue
             duplicate_count += 1
             kept_duplicates += 1
@@ -200,6 +261,7 @@ def main() -> dict:
             article["duplicate_of"] = representative_id
             article["duplicate_group_id"] = representative_id
             article["duplicate_score"] = score_to_rep
+            article["duplicate_confirmed_by"] = "embedding" if verdict is None else "typesafe"
 
         representative["duplicate_count"] = kept_duplicates
 

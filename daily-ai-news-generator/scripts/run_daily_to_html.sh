@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
-ENV_PATH="${REPO_ROOT}/daily-ai-news-generator/local-llm.env"
+ENV_PATH="${REPO_ROOT}/daily-ai-news-generator/llm.env"
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then
   echo "Python executable not found: ${PYTHON_BIN}" >&2
@@ -13,18 +13,11 @@ if [[ ! -x "${PYTHON_BIN}" ]]; then
 fi
 
 if [[ ! -f "${ENV_PATH}" ]]; then
-  echo "Local LLM environment file not found: ${ENV_PATH}" >&2
+  echo "LLM environment file not found: ${ENV_PATH}" >&2
   exit 1
 fi
 
-set -a
-source "${ENV_PATH}"
-set +a
-
-if [[ -z "${LOCAL_LLM_BASE_URL:-}" || -z "${LOCAL_LLM_MODEL:-}" ]]; then
-  echo "LOCAL_LLM_BASE_URL and LOCAL_LLM_MODEL must be set in ${ENV_PATH}" >&2
-  exit 1
-fi
+# llm.env / secrets.env are loaded by the Python scripts (exported variables win).
 
 timestamp() {
   date '+%Y-%m-%d %H:%M:%S %Z'

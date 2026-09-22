@@ -9,14 +9,15 @@ ai-news-feedsスキルの全フィードから過去24時間の記事を収集�
 処理フロー:
   1. 全フィードから記事取得
   2. タイトルベースの重複排除（URL一致 + 文字列類似度）
-  3. ローカルLLM（OpenAI互換Chat Completions）でサマリー生成
-  4. ローカルLLM（OpenAI互換Chat Completions）でAI関連フィルタリング
+  3. LLM（OpenAI互換Chat Completions）でサマリー生成
+  4. LLM（OpenAI互換Chat Completions）でAI関連フィルタリング
   5. JSON出力
 """
 
 import json
 import os
 import re
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
@@ -26,6 +27,8 @@ import feedparser
 import requests
 from dotenv import load_dotenv
 
+import typesafe_triage
+
 # ===== 設定 =====
 DAYS_BACK = 1
 OLSHANSK_BASE = "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/"
@@ -34,11 +37,16 @@ HEADERS = {"User-Agent": "feedparser/6.0"}
 REPO_ROOT = Path(__file__).resolve().parents[2]
 OUTPUT_DIR = REPO_ROOT / "daily-ai-news-generator" / "output"
 OUTPUT_JSON = OUTPUT_DIR / "daily_articles.json"
-ENV_PATH = REPO_ROOT / "daily-ai-news-generator" / "local-llm.env"
+ENV_PATH = REPO_ROOT / "daily-ai-news-generator" / "llm.env"
+SECRETS_PATH = REPO_ROOT / "daily-ai-news-generator" / "secrets.env"
+REJECTED_JSON = OUTPUT_DIR / "rejected_articles.json"
+LLM_HTTP_RETRIES = 3
 DEFAULT_SUMMARY_CONCURRENCY = 3
 DEFAULT_SUMMARY_MAX_OUTPUT_TOKENS = 500
 
-# ===== カテゴリ別フィード定義（ai-news-feedsスキルと完全一致） =====
+# ===== フィード定義（ai-news-feedsスキルと完全一致） =====
+# キーはフィードのグループ名（記事の feed_group）。記事のカテゴリはフィードではなく
+# 内容で決める（typesafe_triage.CATEGORIES + 「その他」）。
 
 FEED_CATEGORIES = {
     # --- Olshansk/rss-feeds: Anthropic関連 ---
@@ -102,16 +110,21 @@ FEED_CATEGORIES = {
     ],
 }
 
+# 既に export 済みの環境変数は上書きしない（秘密値は secrets.env か環境変数で渡す）
 load_dotenv(ENV_PATH)
-LOCAL_LLM_BASE_URL = os.environ.get("LOCAL_LLM_BASE_URL", "http://127.0.0.1:1234/v1/")
-LOCAL_LLM_MODEL = os.environ.get("LOCAL_LLM_MODEL", "google/gemma-4-e2b")
-LOCAL_LLM_API_KEY = os.environ.get("LOCAL_LLM_API_KEY", "local-not-needed")
+load_dotenv(SECRETS_PATH)
+LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "").rstrip("/")
+LLM_MODEL = os.environ.get("LLM_MODEL", "")
+LLM_API_KEY = os.environ.get("LLM_API_KEY", "")
+LLM_DISABLE_REASONING = os.environ.get("LLM_DISABLE_REASONING", "1") not in ("", "0", "false")
 
-LOCAL_LLM_BASE_URL = LOCAL_LLM_BASE_URL.rstrip("/")
-
-if not LOCAL_LLM_BASE_URL:
+if not LLM_BASE_URL or not LLM_MODEL:
     raise RuntimeError(
-        f"LOCAL_LLM_BASE_URL が設定されていません。{ENV_PATH} を確認してください。"
+        f"LLM_BASE_URL / LLM_MODEL が設定されていません。{ENV_PATH} を確認してください。"
+    )
+if not LLM_API_KEY and not re.match(r"https?://(127\.0\.0\.1|localhost)[:/]", LLM_BASE_URL):
+    raise RuntimeError(
+        f"LLM_API_KEY が設定されていません。環境変数か {SECRETS_PATH} で指定してください。"
     )
 
 # ─── ユーティリティ ────────────────────────────────────────────────────────
@@ -157,18 +170,32 @@ def format_jst(dt):
 def log_now():
     return (datetime.now(timezone.utc) + timedelta(hours=9)).strftime("%H:%M:%S")
 
-def extract_json_object(text):
-    text = text.strip()
+def strip_think(text):
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.S)
+    return re.sub(r"^.*?</think>", "", text, flags=re.S).strip()
+
+def extract_json_object(text, required=()):
+    text = strip_think(text)
     if not text:
         raise ValueError("empty response")
     fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, re.S)
     if fenced:
         text = fenced.group(1)
-    start = text.find("{")
     end = text.rfind("}")
-    if start == -1 or end == -1 or end <= start:
+    if end == -1:
         raise ValueError("json object not found")
-    return json.loads(text[start:end + 1])
+    # 前置きテキスト中の "{" に惑わされないよう、後ろの "{" から順に試す
+    start = text.rfind("{", 0, end)
+    while start != -1:
+        try:
+            payload = json.loads(text[start:end + 1])
+        except json.JSONDecodeError:
+            start = text.rfind("{", 0, start)
+            continue
+        if isinstance(payload, dict) and all(key in payload for key in required):
+            return payload
+        start = text.rfind("{", 0, start)
+    raise ValueError("json object not found")
 
 def get_summary_concurrency():
     raw_value = os.environ.get("SUMMARY_CONCURRENCY", str(DEFAULT_SUMMARY_CONCURRENCY))
@@ -266,7 +293,9 @@ SUMMARY_FILTER_JSON_SCHEMA = {
         "required": ["summary", "is_ai_related", "reason"],
         "additionalProperties": False,
     },
+    "strict": True,
 }
+SUMMARY_FILTER_REQUIRED = ("summary", "is_ai_related")
 
 def generate_text(
     prompt,
@@ -282,7 +311,7 @@ def generate_text(
     messages.append({"role": "user", "content": prompt})
 
     request_kwargs = {
-        "model": LOCAL_LLM_MODEL,
+        "model": LLM_MODEL,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_output_tokens,
@@ -294,20 +323,38 @@ def generate_text(
         }
     elif json_mode:
         request_kwargs["response_format"] = {"type": "json_object"}
+    if LLM_DISABLE_REASONING:
+        request_kwargs["reasoning"] = {"enabled": False}
 
     headers = {"Content-Type": "application/json"}
-    if LOCAL_LLM_API_KEY:
-        headers["Authorization"] = f"Bearer {LOCAL_LLM_API_KEY}"
+    if LLM_API_KEY:
+        headers["Authorization"] = f"Bearer {LLM_API_KEY}"
 
-    resp = requests.post(
-        f"{LOCAL_LLM_BASE_URL}/chat/completions",
-        headers=headers,
-        json=request_kwargs,
-        timeout=120,
-    )
-    resp.raise_for_status()
-    data = resp.json()
-    return (data["choices"][0]["message"].get("content") or "").strip()
+    for attempt in range(1, LLM_HTTP_RETRIES + 1):
+        retry_after = None
+        try:
+            resp = requests.post(
+                f"{LLM_BASE_URL}/chat/completions",
+                headers=headers,
+                json=request_kwargs,
+                timeout=120,
+            )
+            if resp.status_code != 429 and resp.status_code < 500:
+                resp.raise_for_status()
+                data = resp.json()
+                content = (data["choices"][0]["message"].get("content") or "").strip()
+                if not content:
+                    raise ValueError("empty content")
+                return content
+            error = f"HTTP {resp.status_code}"
+            retry_after = resp.headers.get("Retry-After")
+        except (requests.ConnectionError, requests.Timeout) as e:
+            error = str(e)
+        if attempt == LLM_HTTP_RETRIES:
+            raise RuntimeError(f"LLM request failed: {error}")
+        delay = float(retry_after) if retry_after and retry_after.isdigit() else 2 ** attempt
+        print(f"  [{log_now()}] [LLM RETRY {attempt}] {error} / {delay:.0f}s待機")
+        time.sleep(min(delay, 60))
 
 def normalize_summary_text(text):
     summary = text.strip()
@@ -371,7 +418,8 @@ def finalize_summary_text(summary, min_len=140, max_len=240, max_sentences=4):
 
     return summary[:max_len].rstrip()
 
-def summarize_and_filter(title, url, text, source):
+def summarize_and_filter(title, url, text, source, trust_ai=False):
+    # trust_ai: TypeSafe が AI 関連と確定済み。LLM の is_ai_related は使わない。
     max_output_tokens = get_summary_max_output_tokens()
     prompt = f"""Read the article below and return only a single JSON object.
 Do not include code blocks, markdown, or any text outside the JSON.
@@ -456,13 +504,22 @@ Previous JSON:
                 system_prompt=JSON_SYSTEM_PROMPT,
                 json_schema=SUMMARY_FILTER_JSON_SCHEMA,
             )
-            payload = extract_json_object(raw)
+            try:
+                payload = extract_json_object(raw, SUMMARY_FILTER_REQUIRED)
+            except ValueError as e:
+                print(f"  [{log_now()}] [JSON RETRY {attempt}] {title[:40]}: {e}")
+                continue
             summary = finalize_summary_text(str(payload.get("summary", "")))
-            is_ai_related = bool(payload.get("is_ai_related"))
+            if trust_ai and attempt == 1 and not payload.get("is_ai_related"):
+                print(f"  [{log_now()}] [判定差分] TypeSafe=AI / LLM=非AI: {title[:50]} / {payload.get('reason', '')}")
+            is_ai_related = trust_ai or bool(payload.get("is_ai_related"))
             payload["summary"] = summary
             payload["is_ai_related"] = is_ai_related
             payload["reason"] = str(payload.get("reason", "")).strip()
-            if is_ai_related and is_summary_in_range(summary) and is_summary_primarily_japanese(summary):
+            # 非AIと判定された記事は要約を使わないので、作り直さず確定する
+            if not is_ai_related:
+                break
+            if is_summary_in_range(summary) and is_summary_primarily_japanese(summary):
                 break
         if payload is None:
             raise ValueError("classification payload missing")
@@ -478,7 +535,7 @@ Previous JSON:
             expanded = extract_json_object(raw)
             payload["summary"] = finalize_summary_text(str(expanded.get("summary", payload["summary"])))
             payload["reason"] = str(expanded.get("reason", payload.get("reason", ""))).strip()
-            payload["is_ai_related"] = bool(expanded.get("is_ai_related", payload["is_ai_related"]))
+            payload["is_ai_related"] = trust_ai or bool(expanded.get("is_ai_related", payload["is_ai_related"]))
 
         if payload.get("is_ai_related") and not is_summary_primarily_japanese(payload["summary"]):
             raw = generate_text(
@@ -491,7 +548,7 @@ Previous JSON:
             rewritten = extract_json_object(raw)
             payload["summary"] = finalize_summary_text(str(rewritten.get("summary", payload["summary"])))
             payload["reason"] = str(rewritten.get("reason", payload.get("reason", ""))).strip()
-            payload["is_ai_related"] = bool(rewritten.get("is_ai_related", payload["is_ai_related"]))
+            payload["is_ai_related"] = trust_ai or bool(rewritten.get("is_ai_related", payload["is_ai_related"]))
 
         if payload.get("is_ai_related") and not is_summary_primarily_japanese(payload["summary"]):
             raw = generate_text(
@@ -504,7 +561,7 @@ Previous JSON:
             translated = extract_json_object(raw)
             payload["summary"] = finalize_summary_text(str(translated.get("summary", payload["summary"])))
             payload["reason"] = str(translated.get("reason", payload.get("reason", ""))).strip()
-            payload["is_ai_related"] = bool(translated.get("is_ai_related", payload["is_ai_related"]))
+            payload["is_ai_related"] = trust_ai or bool(translated.get("is_ai_related", payload["is_ai_related"]))
 
         return {
             "summary": finalize_summary_text(str(payload.get("summary", ""))).strip(),
@@ -522,13 +579,44 @@ Previous JSON:
 def process_article(index, article):
     title = article["title"]
     print(f"  [{log_now()}] [START {index}] {title[:60]}...")
-    analysis = summarize_and_filter(
-        article["title"],
-        article["url"],
-        article["text"],
-        article["source"],
-    )
+    triage = typesafe_triage.triage(article)
+    route = typesafe_triage.route_ai(triage["ai_prob"] if triage else None)
+    if route == "reject":
+        # 要約せずに除外する（LLM 呼び出しなし）
+        analysis = {
+            "summary": "",
+            "is_ai_related": False,
+            "reason": f"TypeSafe判定で非AI (noul={triage['ai_prob']:.2f})",
+        }
+    else:
+        analysis = summarize_and_filter(
+            article["title"],
+            article["url"],
+            article["text"],
+            article["source"],
+            trust_ai=(route == "accept"),
+        )
+    analysis["triage"] = triage
+    analysis["route"] = route if triage else "fallback"
     return index, analysis
+
+def apply_triage(article, triage):
+    """カテゴリ・重要度・タグを記事に反映する。triage が None なら「その他」と既定値。"""
+    article["category"] = typesafe_triage.resolve_category(triage)
+    if triage is None:
+        article["category_confidence"] = None
+        article["ai_prob"] = None
+        article["importance"] = None
+        article["tags"] = []
+        return
+    article["category_confidence"] = triage["category_confidence"]
+    if article["category"] == typesafe_triage.OTHER_CATEGORY:
+        # 見直しの材料として、採用しなかった第一候補を残す
+        article["category_candidate"] = triage["category"]
+    article["ai_prob"] = triage["ai_prob"]
+    article["importance"] = triage["importance"]
+    article["importance_detail"] = triage["scores"]
+    article["tags"] = triage["tags"]
 
 # ─── メイン処理 ──────────────────────────────────────────────────────────────
 
@@ -541,9 +629,11 @@ def main():
     print(f"取得期間: {cutoff.strftime('%Y-%m-%d %H:%M UTC')} 以降")
     print(f"フィード数: {sum(len(v) for v in FEED_CATEGORIES.values())}件")
     print(f"要約並列度: {summary_concurrency}")
+    print(f"TypeSafe判定: {'有効' if typesafe_triage.is_enabled() else '無効（LLMのみで判定）'}")
     print()
 
     all_articles_flat = []  # 全カテゴリをまたいだ重複排除用
+    fetched_count = 0
 
     # ── Step 1〜2: 取得・タイトル重複排除 ──
     for category, feeds in FEED_CATEGORIES.items():
@@ -559,7 +649,7 @@ def main():
                 if t and t >= cutoff:
                     raw_articles.append({
                         "source": feed_name,
-                        "category": category,
+                        "feed_group": category,
                         "title": getattr(entry, 'title', '（タイトルなし）'),
                         "url": getattr(entry, 'link', ''),
                         "date": format_jst(t),
@@ -569,6 +659,7 @@ def main():
 
         # タイトルベースの重複排除（カテゴリ内）
         deduped = deduplicate_by_title(raw_articles)
+        fetched_count += len(raw_articles)
         print(f"  {len(raw_articles)}件取得 → タイトル重複排除後 {len(deduped)}件")
 
         all_articles_flat.extend(deduped)
@@ -579,6 +670,8 @@ def main():
 
     print("=== Step 3: サマリー生成・AI関連判定 ===")
     after_filter = []
+    rejected = []
+    route_counts = {"accept": 0, "reject": 0, "uncertain": 0, "fallback": 0}
     total_to_process = len(all_articles_flat)
     completed = 0
     with ThreadPoolExecutor(max_workers=summary_concurrency) as executor:
@@ -592,6 +685,8 @@ def main():
             art = all_articles_flat[index - 1]
             art["summary"] = analysis["summary"]
             art["reason"] = analysis["reason"]
+            apply_triage(art, analysis["triage"])
+            route_counts[analysis["route"]] += 1
 
             completed += 1
             print(f"  [{log_now()}] [DONE {completed}/{total_to_process}] {art['title'][:60]}...")
@@ -599,6 +694,7 @@ def main():
             if analysis["is_ai_related"]:
                 after_filter.append(art)
             else:
+                rejected.append(art)
                 print(f"  [{log_now()}] [AI関連フィルタ] 除外: {art['title'][:50]} / {analysis['reason']}")
 
     after_filter.sort(key=lambda art: art["date_raw"], reverse=True)
@@ -608,15 +704,17 @@ def main():
     after_dedup = all_articles_flat
     print("=== Step 4: AI関連フィルタ結果 ===")
     removed_filter = len(all_articles_flat) - len(after_filter)
+    print(
+        f"TypeSafe振り分け: 採用確定 {route_counts['accept']}件 / 除外確定 {route_counts['reject']}件 / "
+        f"LLM判定 {route_counts['uncertain']}件 / フォールバック {route_counts['fallback']}件"
+    )
     print(f"AI関連フィルタ: {len(all_articles_flat)}件 → {len(after_filter)}件（{removed_filter}件除去）")
     print()
 
-    # ── カテゴリ別に再分類 ──
-    categorized: dict[str, list] = {cat: [] for cat in FEED_CATEGORIES}
+    # ── 内容ベースのカテゴリ別にまとめる ──
+    categorized: dict[str, list] = {cat: [] for cat in typesafe_triage.CATEGORY_ORDER}
     for art in after_filter:
-        cat = art.get("category", "AIニュース・メディア")
-        if cat in categorized:
-            categorized[cat].append(art)
+        categorized[art["category"]].append(art)
 
     total = len(after_filter)
     print(f"最終合計: {total}件")
@@ -629,16 +727,26 @@ def main():
         "generated_at": (datetime.now(timezone.utc) + timedelta(hours=9)).strftime("%Y-%m-%d %H:%M JST"),
         "total": total,
         "stats": {
-            "fetched": len(all_articles_flat),
+            "fetched": fetched_count,
             "after_title_dedup": len(all_articles_flat),
             "after_dedup": len(after_dedup),
             "after_ai_filter": total,
+            "triage_accepted": route_counts["accept"],
+            "triage_rejected": route_counts["reject"],
+            "triage_uncertain": route_counts["uncertain"],
+            "triage_fallback": route_counts["fallback"],
+            "typesafe_input_tokens": typesafe_triage.usage["input_tokens"],
+            "category_other": len(categorized[typesafe_triage.OTHER_CATEGORY]),
         },
         "categories": categorized,
     }
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     with OUTPUT_JSON.open("w", encoding="utf-8") as f:
         json.dump(output, f, ensure_ascii=False, indent=2)
+
+    # 除外記事は判定評価（eval_typesafe.py）用に残す
+    with REJECTED_JSON.open("w", encoding="utf-8") as f:
+        json.dump({"date_slug": output["date_slug"], "articles": rejected}, f, ensure_ascii=False, indent=2)
 
     print(f"保存完了: {OUTPUT_JSON}")
     return output

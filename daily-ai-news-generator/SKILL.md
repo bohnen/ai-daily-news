@@ -16,10 +16,10 @@ description: 45本のRSSフィードから過去24時間のAIニュースを収�
 ## 前提
 
 - カレントワーキングディレクトリはリポジトリルートにする
-- ローカルLLMサーバーを起動しておく（デフォルト: `http://127.0.0.1:1234/v1/`）
-- `daily-ai-news-generator/local-llm.env` に `LOCAL_LLM_BASE_URL`、`LOCAL_LLM_MODEL`、`LOCAL_LLM_API_KEY` を設定しておく
-- デフォルトでは `LOCAL_LLM_MODEL=google/gemma-4-e2b`、`LOCAL_LLM_API_KEY=local-not-needed` を使い、実クレデンシャルは不要
-- 要約の並列度は `daily-ai-news-generator/local-llm.env` の `SUMMARY_CONCURRENCY` で調整し、未設定時は `3` を使う
+- LLM は OpenAI 互換 Chat Completions API を使う（デフォルト: Nous Portal の `deepseek/deepseek-v4-flash`）
+- `daily-ai-news-generator/llm.env` に `LLM_BASE_URL`、`LLM_MODEL` を設定しておく
+- API キー（`LLM_API_KEY`、任意で `TYPESAFE_API_KEY`）は環境変数か、git 管理外の `daily-ai-news-generator/secrets.env` で渡す（雛形: `secrets.env.example`）。export 済みの環境変数が優先される
+- 要約の並列度は `daily-ai-news-generator/llm.env` の `SUMMARY_CONCURRENCY` で調整し、未設定時は `3` を使う
 - 要約・判定リクエストの生成トークン上限は `SUMMARY_MAX_OUTPUT_TOKENS` で調整し、未設定時は `500` を使う
 - `git` でコミット・プッシュできる状態が望ましい。ただし Codex オートメーションでは detached worktree のことがあるため、公開コミットは必要に応じて一時 clone で作成する
 - Python環境は `uv` で管理する
@@ -33,22 +33,24 @@ uv sync
 ### 1. 環境確認
 
 ```bash
-if [ ! -f daily-ai-news-generator/local-llm.env ]; then
-  echo "daily-ai-news-generator/local-llm.env is missing" >&2
+if [ ! -f daily-ai-news-generator/llm.env ]; then
+  echo "daily-ai-news-generator/llm.env is missing" >&2
   exit 1
 fi
 set -a
-source daily-ai-news-generator/local-llm.env
+source daily-ai-news-generator/llm.env
+[ -f daily-ai-news-generator/secrets.env ] && source daily-ai-news-generator/secrets.env
 set +a
-test -n "${LOCAL_LLM_BASE_URL:-}"
-test -n "${LOCAL_LLM_MODEL:-}"
+test -n "${LLM_BASE_URL:-}"
+test -n "${LLM_MODEL:-}"
+test -n "${LLM_API_KEY:-}"
 export UV_CACHE_DIR=/tmp/uv-cache
 uv sync
 ```
 
-`daily-ai-news-generator/local-llm.env` がない場合、または `LOCAL_LLM_BASE_URL` / `LOCAL_LLM_MODEL` が空の場合は公開せずに停止する。`SUMMARY_CONCURRENCY`、`SUMMARY_MAX_OUTPUT_TOKENS`、`SUMMARY_DEDUP_MODEL`、`SUMMARY_DEDUP_THRESHOLD` は `local-llm.env` の値を使い、オートメーション側で上書きしない。
+`daily-ai-news-generator/llm.env` がない場合、または `LLM_BASE_URL` / `LLM_MODEL` / `LLM_API_KEY` が空の場合は公開せずに停止する。`SUMMARY_CONCURRENCY`、`SUMMARY_MAX_OUTPUT_TOKENS`、`SUMMARY_DEDUP_MODEL`、`SUMMARY_DEDUP_THRESHOLD` は `llm.env` の値を使い、オートメーション側で上書きしない。
 
-現状の生成処理は `fetch_daily.py` のサマリー生成とAI関連判定で、ローカルの OpenAI 互換 Chat Completions API を使う。`local-llm.env` はクレデンシャルを含まないコピー可能なローカル設定として git 管理する。外部プロバイダの秘密値は入れない。
+現状の生成処理は `fetch_daily.py` のサマリー生成とAI関連判定で、OpenAI 互換 Chat Completions API を使う。`llm.env` はクレデンシャルを含まないコピー可能な設定として git 管理する。秘密値は `llm.env` に入れず、環境変数か `secrets.env`（git 管理外）で渡す。値をログや出力に表示しない。
 
 ### 2. 生成パイプライン
 
@@ -73,7 +75,7 @@ uv run python daily-ai-news-generator/scripts/deduplicate_by_summary.py
 uv run python daily-ai-news-generator/scripts/generate_html.py
 ```
 
-`fetch_daily.py` と `deduplicate_by_summary.py` は `daily-ai-news-generator/local-llm.env` を直接読み込む。`run_daily_to_html.sh` も同じファイルを `source` してから各ステップを実行する。
+`fetch_daily.py` と `deduplicate_by_summary.py` は `daily-ai-news-generator/llm.env` と `secrets.env` を直接読み込む（export 済みの環境変数は上書きしない）。`run_daily_to_html.sh` は `llm.env` の存在だけを確認する。
 
 補足:
 - `sentence-transformers` と `hotchpotch/static-embedding-japanese` を使ってサマリー同士の近似重複を検出する
@@ -122,10 +124,12 @@ BASE_BRANCH="automation/daily-ai-news-publish-YYYY-MM-DD"
 git clone --single-branch --branch "$BASE_BRANCH" git@github-tadapin:tadapin/ai-daily-news.git "$TMP"
 cd "$TMP"
 git switch -c "$BRANCH"
-cp "$SRC/daily-ai-news-generator/local-llm.env" daily-ai-news-generator/local-llm.env
+cp "$SRC/daily-ai-news-generator/llm.env" daily-ai-news-generator/llm.env
 cp "$SRC/docs/$DATE.html" "docs/$DATE.html"
 set -a
-source daily-ai-news-generator/local-llm.env
+source daily-ai-news-generator/llm.env
+# secrets.env は clone にコピーしない（誤コミット防止）。元の場所から読む。
+[ -f "$SRC/daily-ai-news-generator/secrets.env" ] && source "$SRC/daily-ai-news-generator/secrets.env"
 set +a
 export UV_CACHE_DIR=/tmp/uv-cache
 uv run python daily-ai-news-generator/scripts/push_to_github.py --date "$DATE" --html "docs/$DATE.html"
@@ -190,8 +194,8 @@ git ls-remote --heads origin "refs/heads/$BRANCH"
 `fetch_daily.py` の処理：
 1. 44フィードから過去24時間の記事を取得
 2. タイトルベースの重複排除（SequenceMatcher、閾値0.75）
-3. ローカルLLM（OpenAI互換Chat Completions）で日本語サマリー生成（2〜3文、十分な長さ）
-4. ローカルLLM（OpenAI互換Chat Completions）で AI 関連フィルタリング（AI/ML/LLM/自動化に無関係な記事を除去）
+3. LLM（OpenAI互換Chat Completions）で日本語サマリー生成（2〜3文、十分な長さ）
+4. LLM（OpenAI互換Chat Completions）で AI 関連フィルタリング（AI/ML/LLM/自動化に無関係な記事を除去）
 5. `daily-ai-news-generator/output/daily_articles.json` に出力
 
 `deduplicate_by_summary.py` の処理：
@@ -210,9 +214,18 @@ git ls-remote --heads origin "refs/heads/$BRANCH"
 - 必要なら指定HTMLを `docs/YYYY-MM-DD.html` にそろえる
 - Git操作自体は行わず、Codexまたはオートメーション本体に委ねる
 
+## 記事カテゴリ
+
+記事のカテゴリはフィードではなく内容で決まる（TypeSafe の choice 判定、定義は `scripts/typesafe_triage.py` の `CATEGORIES`）。
+モデル・研究 / 製品・サービス / 開発・エンジニアリング / ビジネス・業界 / 安全・セキュリティ / 政策・社会 の6分類に加え、
+confidence が 0.5 未満の記事と TypeSafe が使えないときの記事は「その他」に入る。
+`stats.category_other` が増えてきたらカテゴリ体系の見直しを検討する。
+
 ## フィード一覧（44件）
 
-| カテゴリ | 件数 | 主な情報源 |
+下表の「グループ」はフィードの束ね方（記事の `feed_group`）で、記事カテゴリとは別。
+
+| グループ | 件数 | 主な情報源 |
 |---|---|---|
 | Anthropic | 6件 | Anthropic News/Research/Engineering、Claude Code Changelog等 |
 | AI開発ツール | 5件 | Cursor、Ollama、Windsurf Blog/Changelog等 |

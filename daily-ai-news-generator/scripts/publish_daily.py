@@ -8,11 +8,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import urlsplit
 
 import requests
 from dotenv import dotenv_values
@@ -20,7 +20,8 @@ from pydantic import BaseModel, Field
 
 ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = ROOT / "daily-ai-news-generator"
-ENV_PATH = GENERATOR / "local-llm.env"
+ENV_PATH = GENERATOR / "llm.env"
+SECRETS_PATH = GENERATOR / "secrets.env"
 OUTPUT = GENERATOR / "output" / "daily_articles.json"
 DOCS = ROOT / "docs"
 
@@ -29,6 +30,9 @@ class Article(BaseModel):
     summary: str = ""
     reason: str = ""
     is_duplicate_candidate: bool = False
+    ai_prob: float | None = None
+    importance: float | None = None
+    tags: list[str] = Field(default_factory=list)
 
 
 class Stats(BaseModel):
@@ -36,6 +40,12 @@ class Stats(BaseModel):
     after_ai_filter: int = 0
     duplicate_candidates: int = 0
     visible_after_summary_dedup: int | None = None
+    triage_accepted: int = 0
+    triage_rejected: int = 0
+    triage_uncertain: int = 0
+    triage_fallback: int = 0
+    typesafe_input_tokens: int = 0
+    category_other: int = 0
 
 
 class Edition(BaseModel):
@@ -68,23 +78,22 @@ def today_jst() -> str:
 
 
 def config() -> dict[str, str]:
-    values = {key: value for key, value in dotenv_values(ENV_PATH).items() if value}
-    if not ENV_PATH.is_file() or not values.get("LOCAL_LLM_BASE_URL") or not values.get("LOCAL_LLM_MODEL"):
-        raise RuntimeError(f"invalid local LLM configuration: {ENV_PATH}")
+    # Same precedence as the generator: exported variables, then llm.env, then secrets.env.
+    values = {**dotenv_values(SECRETS_PATH), **dotenv_values(ENV_PATH), **os.environ}
+    values = {key: value for key, value in values.items() if value}
+    if not ENV_PATH.is_file() or not values.get("LLM_BASE_URL") or not values.get("LLM_MODEL"):
+        raise RuntimeError(f"invalid LLM configuration: {ENV_PATH}")
     return values
 
 
-def preload(values: dict[str, str]) -> None:
-    parsed = urlsplit(values["LOCAL_LLM_BASE_URL"])
-    if not parsed.scheme or not parsed.netloc:
-        raise RuntimeError("LOCAL_LLM_BASE_URL must be absolute")
-    response = requests.post(
-        f"{parsed.scheme}://{parsed.netloc}/api/v1/chat",
-        json={"model": values["LOCAL_LLM_MODEL"], "system_prompt": "You answer only in rhymes.", "input": "What is your favorite color?"},
-        timeout=180,
-    )
+def check_llm(values: dict[str, str]) -> None:
+    headers = {"Authorization": f"Bearer {values['LLM_API_KEY']}"} if values.get("LLM_API_KEY") else {}
+    response = requests.get(f"{values['LLM_BASE_URL'].rstrip('/')}/models", headers=headers, timeout=30)
     response.raise_for_status()
-    print(f"LM Studio model loaded: {values['LOCAL_LLM_MODEL']}")
+    models = {model.get("id") for model in response.json().get("data", [])}
+    if values["LLM_MODEL"] not in models:
+        raise RuntimeError(f"LLM model not available: {values['LLM_MODEL']}")
+    print(f"LLM endpoint ready: {values['LLM_MODEL']}")
 
 
 def clean_worktree() -> None:
@@ -180,14 +189,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date", default=today_jst())
     parser.add_argument("--publish", action="store_true", help="prepare branch, commit, push, and create a draft PR")
-    parser.add_argument("--skip-model-load", action="store_true")
+    parser.add_argument("--skip-llm-check", action="store_true")
     args = parser.parse_args()
     datetime.strptime(args.date, "%Y-%m-%d")
     branch = base = None
     if args.publish:
         branch, base = prepare_branch(args.date)
-    if not args.skip_model_load:
-        preload(config())
+    if not args.skip_llm_check:
+        check_llm(config())
     command(str(GENERATOR / "scripts" / "run_daily_to_html.sh"))
     result = validate(args.date)
     update_archive(args.date)
