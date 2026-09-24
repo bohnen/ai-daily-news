@@ -106,6 +106,17 @@ uv run python daily-ai-news-generator/scripts/serve_docs.py
 - Commit only `docs/YYYY-MM-DD.html` and `docs/archive-index.json` for daily publish branches.
 - Do not commit `.venv` or `daily-ai-news-generator/output/`.
 
+## Scheduled Publishing (Hermes cron)
+
+- The daily edition is generated and published by the Hermes cron job `ai-daily-news-publish` (job id `4c6fbaaf65de`) at **06:30 JST every day**.
+- The job is a `no_agent` script job: it runs `~/.hermes/scripts/ai_daily_news_publish.sh` and its stdout is delivered verbatim to Telegram (`telegram:8079276420`).
+- The wrapper runs `daily-ai-news-generator/scripts/publish_daily.py` **without** `--publish` (generation, validation, archive update), then commits only `docs/YYYY-MM-DD.html` + `docs/archive-index.json` and pushes **directly to `origin/main`**, then polls GitHub Pages (up to 4 minutes) until `archive-index.json` starts with the edition date.
+- `publish_daily.py --publish` is deliberately NOT used on a schedule: it stops at a branch + draft pull request (Pages serves `main`), and it calls `input()` to confirm a missing previous edition, which aborts with `EOFError` in a non-interactive run.
+- The wrapper rejects unknown arguments (a typo must not trigger a real publish) and supports `--dry-run`, which generates, validates and reports but performs no git writes.
+- Worktree hygiene is enforced by the wrapper: it refuses to publish when the tree is dirty with anything other than the two regenerable publish artifacts.
+- The publish remote is `git@github.com:bohnen/ai-daily-news.git` (a fork of `tadapin/ai-daily-news`), and the public site is <https://bohnen.github.io/ai-daily-news/> (GitHub Pages, source `main` / `/docs`). Paths and URLs mentioning `tadapin` in `SKILL.md` / `README.md` describe the upstream project, not this publish target.
+- Missed days are not backfilled: the job always builds the current JST date, so a gap stays a gap.
+
 ## Operational Expectations
 
 - Do not publish or commit a zero-article daily edition caused by network failure or LLM failure.
