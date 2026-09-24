@@ -29,7 +29,7 @@
   - Generated daily pages include local-only saved state UI using `localStorage` with labels `保存` / `保存済み`.
 - `daily-ai-news-generator/scripts/deduplicate_by_summary.py`
   - Reads `daily_articles.json` after summary generation.
-  - Uses `hotchpotch/static-embedding-japanese` via `sentence-transformers` to detect near-duplicate summaries.
+  - Embeds the original title/text through the LLM endpoint's `/embeddings` (`SUMMARY_DEDUP_MODEL`, default `qwen/qwen3-embedding-8b` on Nous Portal) to detect near-duplicate articles. No local model.
   - Keeps the article with the longest summary as the representative within each similar cluster.
   - Marks the remaining articles as duplicate candidates instead of deleting them from JSON.
 - `daily-ai-news-generator/scripts/push_to_github.py`
@@ -91,7 +91,7 @@ uv run python daily-ai-news-generator/scripts/serve_docs.py
 - The AI-relevance reject threshold stays at `0.3`; the owner prefers fewer articles over recall.
 - TypeSafe cannot generate text and is weak at date comparison and counting; use it only for yes/no, choice, and rubric-score judgments, and pass it the original English title/text rather than the Japanese summary.
 - Pure-function tests: `uv run --with pytest pytest daily-ai-news-generator/tests`.
-- Summary-level deduplication uses `SUMMARY_DEDUP_MODEL` and `SUMMARY_DEDUP_THRESHOLD`; defaults are `hotchpotch/static-embedding-japanese` and `0.65`. Pairs with similarity in `[0.55, 0.80)` are confirmed by TypeSafe (`same_event`) when the key is set.
+- Summary-level deduplication uses `SUMMARY_DEDUP_MODEL` and `SUMMARY_DEDUP_THRESHOLD`; defaults are `qwen/qwen3-embedding-8b` and `0.78`. Pairs with similarity in `[0.65, 0.90)` are confirmed by TypeSafe (`same_event`) when the key is set; `>= 0.90` is a duplicate outright. The thresholds are calibrated to this model on original English text; re-measure them (`DEDUP_LOW`/`DEDUP_HIGH` in `deduplicate_by_summary.py`) if the model changes.
 - `daily-ai-news-generator/llm.env` is intentionally tracked and must not contain credentials. Put `LLM_API_KEY` and `TYPESAFE_API_KEY` in the gitignored `secrets.env` (template: `secrets.env.example`) or the environment, and never print their values.
 - When working in a worktree or publish clone, `secrets.env` is not present; export the keys or copy the file.
 

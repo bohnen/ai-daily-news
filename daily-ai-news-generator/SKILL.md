@@ -78,7 +78,7 @@ uv run python daily-ai-news-generator/scripts/generate_html.py
 `fetch_daily.py` と `deduplicate_by_summary.py` は `daily-ai-news-generator/llm.env` と `secrets.env` を直接読み込む（export 済みの環境変数は上書きしない）。`run_daily_to_html.sh` は `llm.env` の存在だけを確認する。
 
 補足:
-- `sentence-transformers` と `hotchpotch/static-embedding-japanese` を使ってサマリー同士の近似重複を検出する
+- LLM エンドポイントの `/embeddings`（`SUMMARY_DEDUP_MODEL`、既定は Nous Portal の `qwen/qwen3-embedding-8b`）で原文を埋め込み、近似重複を検出する。ローカルモデルは使わない
 - 複数の類似記事がある場合は、最もサマリーが長い記事を代表記事として残す
 - 代表以外の記事は JSON に残したまま重複候補としてマークし、HTML ではデフォルト非表示にする
 

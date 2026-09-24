@@ -2,7 +2,9 @@
 """
 Daily AI News summary-level deduplication script.
 
-Uses sentence embeddings to annotate near-duplicate articles after summary generation.
+Uses embeddings from the OpenAI-compatible LLM endpoint (LLM_BASE_URL/embeddings) to
+annotate near-duplicate articles after summary generation. Embeds the original
+title/text rather than the Japanese summary. No local model is needed.
 When multiple similar articles are found, the article with the longest summary is marked
 as the representative and the rest are marked as duplicate candidates.
 """
@@ -12,27 +14,34 @@ from __future__ import annotations
 import json
 import os
 import hashlib
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
+import requests
 from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer
 
 import typesafe_triage
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INPUT_JSON = REPO_ROOT / "daily-ai-news-generator" / "output" / "daily_articles.json"
 ENV_PATH = REPO_ROOT / "daily-ai-news-generator" / "llm.env"
-DEFAULT_MODEL_NAME = "hotchpotch/static-embedding-japanese"
-DEFAULT_SIMILARITY_THRESHOLD = 0.65
+SECRETS_PATH = REPO_ROOT / "daily-ai-news-generator" / "secrets.env"
+DEFAULT_MODEL_NAME = "qwen/qwen3-embedding-8b"
+# 閾値は qwen3-embedding-8b で原文を埋め込んだときの分布に合わせている
+# （実重複 0.73-0.91、非重複の99%点 0.70-0.80）。モデルを変えたら測り直す。
+DEFAULT_SIMILARITY_THRESHOLD = 0.78
 # この範囲の類似度のペアだけ TypeSafe で「同一事象か」を確認する
-DEDUP_LOW = 0.55
-DEDUP_HIGH = 0.80
+DEDUP_LOW = 0.65
+DEDUP_HIGH = 0.90
 MAX_BOUNDARY_PAIRS = 200
+EMBED_BATCH_SIZE = 16
+EMBED_HTTP_RETRIES = 3
 
 load_dotenv(ENV_PATH)
+load_dotenv(SECRETS_PATH)
 
 
 class UnionFind:
@@ -54,6 +63,46 @@ class UnionFind:
 
 def get_model_name() -> str:
     return os.environ.get("SUMMARY_DEDUP_MODEL", DEFAULT_MODEL_NAME)
+
+
+def embed_texts(model_name: str, texts: list[str]) -> np.ndarray:
+    """LLM_BASE_URL の /embeddings で正規化済み埋め込みを返す。"""
+    base_url = os.environ.get("LLM_BASE_URL", "").rstrip("/")
+    api_key = os.environ.get("LLM_API_KEY", "")
+    if not base_url:
+        raise RuntimeError(f"LLM_BASE_URL が設定されていません。{ENV_PATH} を確認してください。")
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), EMBED_BATCH_SIZE):
+        batch = texts[start:start + EMBED_BATCH_SIZE]
+        for attempt in range(1, EMBED_HTTP_RETRIES + 1):
+            try:
+                resp = requests.post(
+                    f"{base_url}/embeddings",
+                    headers=headers,
+                    json={"model": model_name, "input": batch},
+                    timeout=120,
+                )
+                if resp.status_code == 429 or resp.status_code >= 500:
+                    raise requests.HTTPError(f"HTTP {resp.status_code}")
+                resp.raise_for_status()
+                data = sorted(resp.json()["data"], key=lambda item: item["index"])
+                vectors.extend(item["embedding"] for item in data)
+                break
+            except (requests.ConnectionError, requests.Timeout, requests.HTTPError) as e:
+                if attempt == EMBED_HTTP_RETRIES:
+                    raise RuntimeError(f"embedding request failed: {e}") from e
+                print(f"  [EMBED RETRY {attempt}] {e}")
+                time.sleep(2 ** attempt)
+
+    matrix = np.asarray(vectors, dtype=np.float32)
+    return matrix / np.linalg.norm(matrix, axis=1, keepdims=True)
+
+
+def embedding_text(article: dict) -> str:
+    """埋め込む対象は日本語要約ではなく原文（TypeSafe と同じ入力）。"""
+    return typesafe_triage.build_state(article)
 
 
 def get_similarity_threshold() -> float:
@@ -216,14 +265,7 @@ def main() -> dict:
         save_data(data)
         return data
 
-    model = SentenceTransformer(model_name, trust_remote_code=True)
-    summaries = [article.get("summary", "").strip() or article.get("title", "") for article in flat_articles]
-    embeddings = model.encode(
-        summaries,
-        normalize_embeddings=True,
-        convert_to_numpy=True,
-        show_progress_bar=True,
-    )
+    embeddings = embed_texts(model_name, [embedding_text(article) for article in flat_articles])
 
     similarities = embeddings @ embeddings.T
     verdicts = judge_boundary_pairs(similarities, flat_articles)
