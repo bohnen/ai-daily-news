@@ -348,8 +348,10 @@ def generate_text(
                 return content
             error = f"HTTP {resp.status_code}"
             retry_after = resp.headers.get("Retry-After")
-        except (requests.ConnectionError, requests.Timeout) as e:
-            error = str(e)
+        except (requests.ConnectionError, requests.Timeout, ValueError) as e:
+            # ValueError: "empty content" (HTTP 200 but message.content is empty) and JSON
+            # decode errors are transient model/gateway behavior — retry like 429/5xx.
+            error = str(e) or type(e).__name__
         if attempt == LLM_HTTP_RETRIES:
             raise RuntimeError(f"LLM request failed: {error}")
         delay = float(retry_after) if retry_after and retry_after.isdigit() else 2 ** attempt
