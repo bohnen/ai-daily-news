@@ -41,8 +41,8 @@ def test_route_ai_thresholds():
 
 
 def test_importance_is_normalized():
-    assert ts.compute_importance({"practical_value": 4, "novelty": 4, "technical_depth": 4}) == 1.0
-    assert ts.compute_importance({"practical_value": 0, "novelty": 0, "technical_depth": 0}) == 0.0
+    assert ts.compute_importance({"insight": 4, "practical_value": 4, "novelty": 4, "technical_depth": 4}) == 1.0
+    assert ts.compute_importance({"insight": 0, "practical_value": 0, "novelty": 0, "technical_depth": 0}) == 0.0
 
 
 def test_low_confidence_category_goes_to_other():
