@@ -32,6 +32,7 @@ import typesafe_triage
 # ===== 設定 =====
 DAYS_BACK = 1
 OLSHANSK_BASE = "https://raw.githubusercontent.com/Olshansk/rss-feeds/main/feeds/"
+BOHNEN_BASE = "https://raw.githubusercontent.com/bohnen/rss-feeds/main/feeds/"
 HEADERS = {"User-Agent": "feedparser/6.0"}
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -84,6 +85,15 @@ FEED_CATEGORIES = {
         ("NVIDIA Deep Learning",     "https://blogs.nvidia.com/blog/category/deep-learning/feed/"),
         ("NVIDIA Generative AI",     "https://developer.nvidia.com/blog/category/generative-ai/feed/rss2/"),
         ("Cloudflare Blog",          "https://blog.cloudflare.com/rss/"),
+    ],
+    # --- 自作fork: 中国AIベンダー + Nous Research ---
+    "中国AIベンダー": [
+        ("Qwen Blog",       BOHNEN_BASE + "feed_qwen.xml"),
+        ("DeepSeek News",   BOHNEN_BASE + "feed_deepseek.xml"),
+        ("Z.ai Release Notes", BOHNEN_BASE + "feed_zai.xml"),
+        ("Moonshot AI / Kimi Blog", BOHNEN_BASE + "feed_moonshot.xml"),
+        ("MiniMax News",    BOHNEN_BASE + "feed_minimax.xml"),
+        ("Nous Research Blog", BOHNEN_BASE + "feed_nous.xml"),
     ],
     # --- AIニュースサイト ---
     "AIニュース・メディア": [
