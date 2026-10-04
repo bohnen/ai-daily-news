@@ -83,6 +83,7 @@ FEED_CATEGORIES = {
         ("Hugging Face Blog",        "https://huggingface.co/blog/feed.xml"),
         ("NVIDIA Deep Learning",     "https://blogs.nvidia.com/blog/category/deep-learning/feed/"),
         ("NVIDIA Generative AI",     "https://developer.nvidia.com/blog/category/generative-ai/feed/rss2/"),
+        ("Cloudflare Blog",          "https://blog.cloudflare.com/rss/"),
     ],
     # --- AIニュースサイト ---
     "AIニュース・メディア": [
@@ -107,6 +108,22 @@ FEED_CATEGORIES = {
         ("Chander Ramesh",           OLSHANSK_BASE + "feed_chanderramesh.xml"),
         ("Hamel Husain",             "https://hamel.dev/index.xml"),
         ("Paul Graham",              OLSHANSK_BASE + "feed_paulgraham.xml"),
+        ("Latent Space",             "https://www.latent.space/feed"),
+    ],
+    # --- MLエンジニアリング解説（ブックマーク分析2026-10で追加） ---
+    "MLエンジニアリング解説": [
+        ("Machine Learning Mastery", "https://machinelearningmastery.com/feed/"),
+        ("InfoQ AI",                 "https://feed.infoq.com/artificial_intelligence"),
+        ("Eugen Yan",                "https://eugeneyan.com/rss/"),
+        ("Chip Huyen",               "https://huyenchip.com/feed.xml"),
+        ("Lilian Weng",              "https://lilianweng.github.io/index.xml"),
+    ],
+    # --- 日本語テックメディア（ブックマーク分析2026-10で追加） ---
+    "日本語テックメディア": [
+        ("Zenn AI",                  "https://zenn.dev/topics/ai/feed"),
+        ("Qiita AI",                 "https://qiita.com/tags/AI/feed"),
+        ("Publickey",                "https://www.publickey1.jp/atom.xml"),
+        ("voluntas",                 "https://voluntas.ghost.io/rss/"),
     ],
 }
 
