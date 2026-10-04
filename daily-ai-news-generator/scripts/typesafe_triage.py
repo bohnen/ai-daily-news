@@ -36,7 +36,7 @@ TAG_THRESHOLD = 0.7
 CATEGORY_MIN_CONFIDENCE = 0.5
 SAME_EVENT_THRESHOLD = 0.5
 # 収集目的は技術・実装情報。ビジネス上の影響の大きさは重要度に入れない。
-IMPORTANCE_WEIGHTS = {"practical_value": 0.4, "technical_depth": 0.4, "novelty": 0.2}
+IMPORTANCE_WEIGHTS = {"insight": 0.4, "technical_depth": 0.25, "novelty": 0.2, "practical_value": 0.15}
 
 AI_QUESTION = {
     "type": "noul",
@@ -48,6 +48,22 @@ AI_QUESTION = {
 }
 
 SCORE_QUESTIONS = {
+    "insight": {
+        "type": "score",
+        "instructions": (
+            "How much new insight this article gives into how AI systems behave, why they fail, "
+            "or how they should be designed. Original analysis, measured evidence, first-hand "
+            "diagnosis of a surprising behavior, or a research finding scores high. A tutorial "
+            "that applies existing knowledge scores low even if the instructions are excellent."
+        ),
+        "criteria": [
+            "No insight: promotes a tool, event, or opinion with no analysis of AI system behavior",
+            "Restates known facts or official documentation in the author's own words",
+            "A personal experience report whose lesson is broadly the expected one",
+            "New evidence or a careful diagnosis that changes how you understand a failure or design choice",
+            "A research finding or first-hand deep dive that overturns a common assumption about AI systems",
+        ],
+    },
     "practical_value": {
         "type": "score",
         "instructions": "How directly useful this article is to a software engineer who builds applications with AI models",
