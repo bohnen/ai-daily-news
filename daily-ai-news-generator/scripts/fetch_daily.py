@@ -105,10 +105,12 @@ FEED_CATEGORIES = {
         ("Ars Technica AI",          "https://arstechnica.com/ai/feed/"),
         ("AI News",                  "https://www.artificialintelligence-news.com/feed/"),
         ("The Batch (DeepLearning.AI)", OLSHANSK_BASE + "feed_the_batch.xml"),
+        ("AlphaSignal",              "https://alphasignal.ai/feed.xml"),
     ],
     # --- 研究者ブログ・ニュースレター ---
     "研究者・ニュースレター": [
         ("Import AI (Jack Clark)",   "https://importai.substack.com/feed"),
+        ("AlphaSignal Newsletter",   "https://alphasignalai.substack.com/feed"),
         ("The Gradient",             "https://thegradient.pub/rss/"),
         ("Towards Data Science",     "https://towardsdatascience.com/feed"),
         ("Ahead of AI (S. Raschka)", "https://magazine.sebastianraschka.com/feed"),
