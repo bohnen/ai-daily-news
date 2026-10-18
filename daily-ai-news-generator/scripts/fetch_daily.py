@@ -399,7 +399,15 @@ def count_summary_sentences(summary):
     return len([s for s in re.split(r"[。.!?]+", summary) if s.strip()])
 
 def is_summary_primarily_japanese(summary):
+    """日本語判定: かな（ひらがな/カタカナ）の有無を必須条件にする。
+
+    漢字のみの要約は中国語（簡体字）のことがある（AlphaSignal 等のアグリゲータで実測、
+    2026-10-18）。CJK 漢字は日中共通なので文字数だけでは区別できず、かなの存在を
+    要求する。かなが1文字も無く、漢字のみの本文は日本語とみなさずリトライ対象にする。"""
     if not summary:
+        return False
+    kana = len(re.findall(r"[\u3040-\u30ff]", summary))
+    if kana == 0:
         return False
     japanese_chars = len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff]", summary))
     latin_letters = len(re.findall(r"[A-Za-z]", summary))
@@ -501,8 +509,10 @@ Previous JSON:
     japanese_retry_prompt = f"""Rewrite the JSON and return only a single JSON object.
 Do not include code blocks, markdown, or any text outside the JSON.
 
-The summary is not Japanese enough.
-- summary must be natural Japanese only
+The summary is not Japanese enough — it may be Chinese or another language.
+- summary must be written in natural JAPANESE (ひらがな・カタカナ・漢字を混ぜた日本語)
+- do NOT submit Chinese (简体中文) text: 简体字（发/布/为/题/现/处/还/过/们）が含まれる要約は却下
+- every sentence must contain kana (ひらがな or カタカナ); pure-kanji sentences are rejected
 - do not leave English sentences in summary
 - summary must be 140-240 characters and 2-4 sentences
 - reason must be one short Japanese sentence
@@ -516,7 +526,10 @@ Previous JSON:
 Do not include code blocks, markdown, or any text outside the JSON.
 
 Translate the summary into natural Japanese.
+- the previous summary is Chinese (简体中文) — translate it into JAPANESE
 - keep the facts unchanged
+- every sentence must contain kana (ひらがな or カタカナ)
+- use Japanese kana mixed with kanji ( Japanese かな交じり表記 ), never 简体中文
 - do not leave English sentences in summary
 - summary must be 140-240 characters and 2-4 sentences
 - reason must be one short Japanese sentence
