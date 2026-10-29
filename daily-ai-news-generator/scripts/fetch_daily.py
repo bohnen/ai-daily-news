@@ -66,6 +66,7 @@ FEED_CATEGORIES = {
         ("Windsurf Blog",            OLSHANSK_BASE + "feed_windsurf_blog.xml"),
         ("Windsurf Changelog",       OLSHANSK_BASE + "feed_windsurf_changelog.xml"),
         ("Windsurf Next Changelog",  OLSHANSK_BASE + "feed_windsurf_next_changelog.xml"),
+        ("Strands Agents Blog",      "https://strandsagents.com/blog/feed.xml"),
     ],
     # --- Olshansk/rss-feeds: その他 + AIベンダー公式 ---
     "AIベンダー": [
