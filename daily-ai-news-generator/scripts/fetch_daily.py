@@ -95,6 +95,13 @@ FEED_CATEGORIES = {
         ("Moonshot AI / Kimi Blog", BOHNEN_BASE + "feed_moonshot.xml"),
         ("MiniMax News",    BOHNEN_BASE + "feed_minimax.xml"),
         ("Nous Research Blog", BOHNEN_BASE + "feed_nous.xml"),
+        ("DeepSeek Harness Releases", "https://github.com/deepseek-ai/deepseek-harness/releases.atom"),
+    ],
+    # --- エージェントハーネス公式ブログ ---
+    "エージェントハーネス": [
+        ("Pi / Earendil Blog", "https://earendil.com/posts/feed.rss"),
+        ("Pi Releases",        "https://github.com/earendil-works/pi/releases.atom"),
+        ("Mario Zechner (Pi作者)", "https://mariozechner.at/rss.xml"),
     ],
     # --- AIニュースサイト ---
     "AIニュース・メディア": [
