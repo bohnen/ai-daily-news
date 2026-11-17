@@ -377,7 +377,15 @@ def generate_text(
                 timeout=120,
             )
             if resp.status_code != 429 and resp.status_code < 500:
-                resp.raise_for_status()
+                # 404 on the chat endpoint is usually a permanent error, but the Nous
+                # inference API occasionally returns a transient 404 (route blip,
+                # 2026-11-17: 1/122 calls). Treat it like 429/5xx: retry, and only
+                # hard-fail if it persists across all attempts.
+                if resp.status_code == 404:
+                    error = f"HTTP {resp.status_code} (transient endpoint blip; retrying)"
+                    retry_after = resp.headers.get("Retry-After")
+                else:
+                    resp.raise_for_status()
                 data = resp.json()
                 content = (data["choices"][0]["message"].get("content") or "").strip()
                 if not content:
