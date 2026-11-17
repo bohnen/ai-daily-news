@@ -520,7 +520,7 @@ Keep the facts, but make summary longer.
 Title: {title}
 Content: {text}
 Previous JSON:
-{{payload}}
+__PAYLOAD_JSON__
 """
     japanese_retry_prompt = f"""Rewrite the JSON and return only a single JSON object.
 Do not include code blocks, markdown, or any text outside the JSON.
@@ -536,7 +536,7 @@ The summary is not Japanese enough — it may be Chinese or another language.
 Title: {title}
 Content: {text}
 Previous JSON:
-{{payload}}
+__PAYLOAD_JSON__
 """
     translation_retry_prompt = """Rewrite the JSON and return only a single JSON object.
 Do not include code blocks, markdown, or any text outside the JSON.
@@ -551,7 +551,7 @@ Translate the summary into natural Japanese.
 - reason must be one short Japanese sentence
 
 Previous JSON:
-{payload}
+__PAYLOAD_JSON__
 """
     try:
         payload = None
@@ -586,7 +586,7 @@ Previous JSON:
 
         if payload.get("is_ai_related") and len(payload["summary"]) < 140:
             raw = generate_text(
-                expand_prompt.format(payload=json.dumps(payload, ensure_ascii=False)),
+                expand_prompt.replace("__PAYLOAD_JSON__", json.dumps(payload, ensure_ascii=False)),
                 max_output_tokens=max_output_tokens,
                 temperature=0.2,
                 system_prompt=JSON_SYSTEM_PROMPT,
@@ -599,7 +599,7 @@ Previous JSON:
 
         if payload.get("is_ai_related") and not is_summary_primarily_japanese(payload["summary"]):
             raw = generate_text(
-                japanese_retry_prompt.format(payload=json.dumps(payload, ensure_ascii=False)),
+                japanese_retry_prompt.replace("__PAYLOAD_JSON__", json.dumps(payload, ensure_ascii=False)),
                 max_output_tokens=max_output_tokens,
                 temperature=0.1,
                 system_prompt=JSON_SYSTEM_PROMPT,
@@ -612,7 +612,7 @@ Previous JSON:
 
         if payload.get("is_ai_related") and not is_summary_primarily_japanese(payload["summary"]):
             raw = generate_text(
-                translation_retry_prompt.format(payload=json.dumps(payload, ensure_ascii=False)),
+                translation_retry_prompt.replace("__PAYLOAD_JSON__", json.dumps(payload, ensure_ascii=False)),
                 max_output_tokens=max_output_tokens,
                 temperature=0,
                 system_prompt=JSON_SYSTEM_PROMPT,
